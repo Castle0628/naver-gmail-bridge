@@ -25,6 +25,7 @@ import os
 import smtplib
 import ssl
 import sys
+import time
 from email.header import decode_header, make_header
 from email.message import EmailMessage
 from pathlib import Path
@@ -197,6 +198,54 @@ def send(msgs: list[EmailMessage]):
             s.send_message(msg, from_addr=NAVER_ADDR, to_addrs=[GMAIL_ADDR])
 
 
+DELETE_AFTER_SEC = int(os.environ.get("BRIDGE_DELETE_AFTER_SEC", 3 * 24 * 3600))  # 3일
+TRASH = "Deleted Messages"
+
+
+def purge(m, st, now=None) -> int:
+    """지메일로 넘긴 지 3일 지난 원본을 네이버에서 영구 삭제(휴지통까지).
+    st["_pending"] = {폴더: [[uid, 넘긴시각, Message-ID], ...]}. 사용자 승인: 2026-11-20 '3일 뒤 삭제'."""
+    now = now or time.time()
+    pend = st.setdefault("_pending", {})
+    gone = 0
+    for name, items in list(pend.items()):
+        due = [it for it in items if now - it[1] >= DELETE_AFTER_SEC]
+        if not due:
+            continue
+        typ, _ = m.select(f'"{name}"')
+        if typ != "OK":
+            continue
+        uids = ",".join(str(it[0]) for it in due)
+        m.uid("store", uids, "+FLAGS.SILENT", r"(\Deleted)")
+        m.uid("expunge", uids)
+        gone += len(due)
+        # 네이버가 휴지통으로 옮겼다면 거기서도 지운다(용량에 남지 않게)
+        mids = [it[2] for it in due if it[2]]
+        if mids and m.select(f'"{TRASH}"')[0] == "OK":
+            for mid in mids:
+                typ, d = m.uid("search", None, "HEADER", "Message-ID", mid)
+                tu = d[0].split() if d and d[0] else []
+                if tu:
+                    s = b",".join(tu).decode()
+                    m.uid("store", s, "+FLAGS.SILENT", r"(\Deleted)")
+                    m.uid("expunge", s)
+        pend[name] = [it for it in items if it not in due]
+        log.info("네이버 원본 삭제 %s %d통", st.get(name, {}).get("label", name), len(due))
+        save_state(st)
+    return gone
+
+
+def quota(m) -> str:
+    try:
+        typ, d = m.getquotaroot("INBOX")
+        txt = b" ".join(x for x in d[-1] if isinstance(x, bytes)) if isinstance(d[-1], list) else d[-1]
+        import re
+        u, lim = map(int, re.search(rb"STORAGE (\d+) (\d+)", txt if isinstance(txt, bytes) else str(txt).encode()).groups())
+        return f"{u/1024/1024:.2f}GB / {lim/1024/1024:.0f}GB"
+    except Exception as e:
+        return f"알 수 없음({e})"
+
+
 def run(init_only=False):
     st = load_state()
     m = imap_login()
@@ -221,14 +270,22 @@ def run(init_only=False):
                 if BRIDGE_HEADER.encode() in raw[:20000]:
                     pass  # 우리가 만든 메일이면 넘기지 않음
                 else:
-                    out = build_forward(raw, human) if len(raw) <= MAX_BYTES else too_big_notice(raw, human)
+                    small = len(raw) <= MAX_BYTES
+                    out = build_forward(raw, human) if small else too_big_notice(raw, human)
                     send([out])
                     sent += 1
                     log.info("넘김 %s uid=%s %s", human, uid, out["Subject"])
+                    if small:  # 통째로 넘긴 것만 3일 뒤 삭제 대상. 큰 첨부는 네이버에 남김
+                        mid = email.message_from_bytes(raw[:200000]).get("Message-ID", "")
+                        st.setdefault("_pending", {}).setdefault(name, []).append(
+                            [uid, time.time(), str(mid).strip()])
                 cur["next"] = uid + 1
                 save_state(st)  # 한 통마다 저장 → 중간에 끊겨도 두 번 안 보냄
             cur["next"] = max(cur["next"], nxt)
         save_state(st)
+        if not init_only:
+            purge(m, st)
+            log.info("네이버 용량 %s", quota(m))
     finally:
         try:
             m.logout()
