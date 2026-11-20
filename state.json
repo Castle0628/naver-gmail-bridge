@@ -1,7 +1,7 @@
 {
  "INBOX": {
   "validity": 0,
-  "next": 51758,
+  "next": 51761,
   "label": "INBOX"
  },
  "&sLSsjMT0ulTHfNVo-": {
@@ -118,5 +118,14 @@
   "validity": 133,
   "next": 50164,
   "label": "법원감정/경남 합천군 단독주택"
+ },
+ "_pending": {
+  "INBOX": [
+   [
+    51760,
+    1795169048.353321,
+    "<1795169034325.7ff54.37832@cvnsmtp003.nm>"
+   ]
+  ]
  }
 }
