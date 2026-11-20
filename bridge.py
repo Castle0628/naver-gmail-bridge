@@ -380,6 +380,35 @@ def purge(m, st, now=None) -> int:
     return gone
 
 
+SENT = "Sent Messages"
+
+
+def purge_sent_copies(m) -> int:
+    """다리가 지메일로 보낼 때 네이버가 보낸메일함에 남기는 사본을 바로 지운다(용량 두 배 방지).
+    우리 표시(X-Naver-Gmail-Bridge)가 붙은 메일만 — 사람이 보낸 메일은 건드리지 않음."""
+    gone = 0
+    for box in (SENT, TRASH):
+        if m.select(f'"{box}"')[0] != "OK":
+            continue
+        # 네이버는 빈 값 HEADER 검색이 안 됨 → 지메일로 간 메일만 골라 머리글에 표시가 있는지 본다
+        typ, d = m.uid("search", None, "TO", GMAIL_ADDR)
+        cand = d[0].split() if typ == "OK" and d and d[0] else []
+        uids = []
+        for u in cand:
+            typ, h = m.uid("fetch", u, f"(BODY.PEEK[HEADER.FIELDS ({BRIDGE_HEADER})])")
+            hdr = next((p[1] for p in h if isinstance(p, tuple)), b"")
+            if BRIDGE_HEADER.lower().encode() in hdr.lower():
+                uids.append(u)
+        if uids:
+            s = b",".join(uids).decode()
+            m.uid("store", s, "+FLAGS.SILENT", r"(\Deleted)")
+            m.uid("expunge", s)
+            gone += len(uids)
+    if gone:
+        log.info("보낸메일함 다리 사본 삭제 %d통", gone)
+    return gone
+
+
 def quota(m) -> str:
     try:
         typ, d = m.getquotaroot("INBOX")
@@ -443,6 +472,7 @@ def run(init_only=False):
         save_state(st)
         if not init_only:
             purge(m, st)
+            purge_sent_copies(m)
             log.info("네이버 용량 %s", quota(m))
     finally:
         try:
