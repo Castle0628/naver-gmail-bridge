@@ -1,31 +1,49 @@
 name: naver-to-gmail
+# 깃허브 예약(cron)이 이 저장소에서 2시간 동안 한 번도 안 돌았음(2026-11-20).
+# 그래서 한 번 실행이 약 5시간 40분 동안 5분마다 다리를 돌리고, 끝날 때 자기 자신을 다시 실행한다.
+# 예약 줄은 체인이 끊겼을 때 다시 살리는 예비로 남긴다(겹치면 concurrency가 하나만 돌게 함).
 on:
   schedule:
-    - cron: "3-58/5 * * * *"  # 정각 혼잡 피함(깃허브 권장). 5분마다
+    - cron: "3-58/5 * * * *"
   workflow_dispatch:
+    inputs:
+      minutes:
+        description: "이번 실행이 도는 시간(분). 시험할 땐 짧게"
+        required: false
+        default: "340"
 permissions:
   contents: write
+  actions: write
 concurrency:
   group: bridge
   cancel-in-progress: false
 jobs:
   run:
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 355
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
-      - name: 네이버 새 메일 → 지메일
+      - name: 5분마다 네이버 새 메일 → 지메일
         env:
           NAVER_APP_PASSWORD: ${{ secrets.NAVER_APP_PASSWORD }}
           FILES_TOKEN: ${{ secrets.FILES_TOKEN }}
-        run: python bridge.py
-      - name: 본 위치 저장
-        if: always()
+          LOOP_MINUTES: ${{ inputs.minutes || '340' }}
         run: |
           git config user.name "bridge-bot"
           git config user.email "bridge-bot@users.noreply.github.com"
-          git add state.json
-          git diff --cached --quiet || (git commit -m "state" -q && git push -q)
+          end=$(( $(date +%s) + LOOP_MINUTES * 60 ))
+          while :; do
+            python bridge.py || echo "이번 바퀴 실패 - 5분 뒤 다시"
+            git add state.json
+            git diff --cached --quiet || { git commit -m "state" -q && { git push -q || { git pull --rebase -q && git push -q; }; }; } || echo "state 저장 실패"
+            [ "$(date +%s)" -ge "$end" ] && break
+            sleep 300
+          done
+      - name: 다음 실행 이어 붙이기
+        if: always()
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh workflow run bridge.yml --repo "${{ github.repository }}"
