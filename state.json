@@ -1,7 +1,7 @@
 {
  "INBOX": {
   "validity": 0,
-  "next": 51761,
+  "next": 51766,
   "label": "INBOX"
  },
  "&sLSsjMT0ulTHfNVo-": {
@@ -101,7 +101,7 @@
  },
  "&rBDIFaysyAE-": {
   "validity": 130,
-  "next": 51741,
+  "next": 51767,
   "label": "감정견적"
  },
  "&1WjFkbPEwRytAA- &rHTBJMCsxcWtALms-": {
@@ -125,6 +125,18 @@
     51760,
     1795169048.353321,
     "<1795169034325.7ff54.37832@cvnsmtp003.nm>"
+   ],
+   [
+    51765,
+    1795170526.8610215,
+    "<179517050910.768.14697733955263582757@daeseong-enc.example>"
+   ]
+  ],
+  "&rBDIFaysyAE-": [
+   [
+    51766,
+    1795170539.706943,
+    "<179517050912.768.4989022515023573728@daeseong-enc.example>"
    ]
   ]
  }
