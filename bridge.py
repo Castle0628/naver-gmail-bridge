@@ -256,6 +256,68 @@ def big_with_links(raw: bytes, folder_human: str, uid: int, token: str) -> Email
     return n
 
 
+PACK_BYTES = 34 * 1024 * 1024   # 나눠 보낼 때 한 통에 담는 첨부(인코딩 후) 상한
+
+
+def split_forward(raw: bytes, folder_human: str):
+    """37MB 넘는 메일을 첨부를 나눠 여러 통(각 37MB 아래)으로 보낸다.
+    파일 하나가 너무 커서 못 나누면 None."""
+    orig = email.message_from_bytes(raw, policy=email.policy.default)
+    atts = []
+    for part in orig.walk():
+        if part.is_multipart():
+            continue
+        if part.get_filename() or part.get_content_disposition() == "attachment":
+            atts.append(part)
+    sizes = [len(p.as_bytes()) for p in atts]
+    if not atts or max(sizes) > PACK_BYTES:
+        return None
+    groups, cur, cur_size = [], [], 0
+    for p, s in sorted(zip(atts, sizes), key=lambda x: -x[1]):
+        if cur and cur_size + s > PACK_BYTES:
+            groups.append(cur)
+            cur, cur_size = [], 0
+        cur.append(p)
+        cur_size += s
+    groups.append(cur)
+
+    o_from = dec(orig.get("From"))
+    o_name, o_addr = email.utils.parseaddr(o_from)
+    shown = (o_name or o_addr or "알 수 없음").replace('"', "")
+    subject = dec(orig.get("Subject")) or "(제목 없음)"
+    pre = f"[{folder_human}] " if folder_human != "INBOX" else ""
+    body = orig.get_body(preferencelist=("html", "plain"))
+    total = len(groups)
+    outs = []
+    for i, grp in enumerate(groups, 1):
+        n = EmailMessage()
+        n["From"] = email.utils.formataddr((f"{shown} ({o_addr})", NAVER_ADDR))
+        n["To"] = GMAIL_ADDR
+        n["Reply-To"] = dec(orig.get("Reply-To")) or o_from
+        n["Subject"] = f"{pre}({i}/{total}) {subject}"
+        n["X-Original-From"] = o_from
+        if orig.get("To"):
+            n["X-Original-To"] = dec(orig.get("To"))
+        if orig.get("Cc"):
+            n["X-Original-Cc"] = dec(orig.get("Cc"))
+        n[BRIDGE_HEADER] = folder_human
+        names = ", ".join(dec(p.get_filename()) or "첨부" for p in grp)
+        head = f"첨부가 커서 {total}통으로 나눠 보냈어요. 이 메일({i}/{total}) 첨부: {names}\n\n"
+        if i == 1 and body is not None:
+            if body.get_content_type() == "text/html":
+                n.set_content(head + "(HTML 메일이에요)")
+                n.add_alternative(f"<p>{html.escape(head)}</p>" + body.get_content(), subtype="html")
+            else:
+                n.set_content(head + body.get_content())
+        else:
+            n.set_content(head)
+        n.make_mixed()
+        for p in grp:
+            n.attach(p)
+        outs.append(n)
+    return outs
+
+
 def too_big_notice(raw: bytes, folder_human: str) -> EmailMessage:
     orig = email.message_from_bytes(raw, policy=email.policy.default)
     o_from = dec(orig.get("From"))
@@ -354,8 +416,12 @@ def run(init_only=False):
                     pass  # 우리가 만든 메일이면 넘기지 않음
                 else:
                     token = os.environ.get("FILES_TOKEN")
+                    parts = None if len(raw) <= MAX_BYTES else split_forward(raw, human)
                     if len(raw) <= MAX_BYTES:
                         out, done = build_forward(raw, human), True
+                    elif parts:
+                        send(parts[:-1])          # 마지막 한 통은 아래에서 보냄
+                        out, done = parts[-1], True
                     elif token:
                         try:
                             out, done = big_with_links(raw, human, uid, token), True
