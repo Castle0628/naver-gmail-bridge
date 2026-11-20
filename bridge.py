@@ -102,8 +102,8 @@ def imap_login() -> imaplib.IMAP4_SSL:
     return m
 
 
-def list_folders(m) -> list[tuple[str, str]]:
-    """(서버 이름, 사람이 읽는 이름) 목록. 넘길 폴더만."""
+def list_folders(m, include_skipped: bool = False) -> list[tuple[str, str]]:
+    """(서버 이름, 사람이 읽는 이름) 목록. 기본은 넘길 폴더만, include_skipped면 전부."""
     typ, data = m.list()
     res = []
     for raw in data:
@@ -118,7 +118,7 @@ def list_folders(m) -> list[tuple[str, str]]:
         if name.upper() == "INBOX":
             human = "INBOX"
         top = human.split("/")[0]
-        if human in SKIP_FOLDERS or top in SKIP_FOLDERS:
+        if not include_skipped and (human in SKIP_FOLDERS or top in SKIP_FOLDERS):
             continue
         res.append((name, human))
     return res
@@ -422,6 +422,70 @@ def purge_sent_copies(m) -> int:
     return gone
 
 
+BRIDGE_START = "20-Nov-2026"          # 다리를 켠 날. 이전 보낸메일은 지메일에 없으니 건드리지 않음
+SENT_KEEP_DAYS = 3                    # 지메일에서 보낸 메일의 네이버 사본(지메일 보낸편지함엔 남음)
+JUNK_KEEP_DAYS = 30                   # 광고·알림 폴더(넘기지 않는 폴더)
+TRASH_KEEP_DAYS = 7                   # 휴지통
+JUNK_FOLDERS = {"Junk", "프로모션", "SNS", "카페", "알바몬"}
+
+
+def _imap_date(days_ago: float) -> str:
+    return time.strftime("%d-%b-%Y", time.gmtime(time.time() - days_ago * 86400))
+
+
+def _delete_matching(m, box: str, *criteria) -> int:
+    if m.select(f'"{box}"')[0] != "OK":
+        return 0
+    typ, d = m.uid("search", None, *criteria)
+    uids = d[0].split() if typ == "OK" and d and d[0] else []
+    for i in range(0, len(uids), 500):
+        s = b",".join(uids[i:i + 500]).decode()
+        m.uid("store", s, "+FLAGS.SILENT", r"(\Deleted)")
+        m.uid("expunge", s)
+    return len(uids)
+
+
+def housekeeping(m) -> None:
+    """네이버 5GB가 다시 차지 않게 하는 청소. 사용자 승인 2026-11-20 '지워. 뭐가 됐던 절대 네이버 용량 안 터지게 해'.
+    - 보낸메일함: 다리를 켠 뒤 지메일에서 보낸 메일의 네이버 사본, 3일 지나면 삭제
+    - 광고·알림 폴더(JUNK_FOLDERS): 30일 지나면 삭제
+    - 휴지통: 7일 지나면 삭제"""
+    names = {human: name for name, human in list_folders(m, include_skipped=True)}
+    n_sent = _delete_matching(m, SENT, "SINCE", BRIDGE_START, "BEFORE", _imap_date(SENT_KEEP_DAYS))
+    n_junk = sum(_delete_matching(m, names[h], "BEFORE", _imap_date(JUNK_KEEP_DAYS))
+                 for h in JUNK_FOLDERS if h in names)
+    n_trash = _delete_matching(m, TRASH, "BEFORE", _imap_date(TRASH_KEEP_DAYS))
+    if n_sent or n_junk or n_trash:
+        log.info("청소: 보낸메일 사본 %d, 광고·알림 %d, 휴지통 %d통", n_sent, n_junk, n_trash)
+
+
+QUOTA_ALERT = 0.90
+
+
+def quota_alert(m, st) -> None:
+    """용량이 90%를 넘으면 지메일로 경고(하루 한 번)."""
+    try:
+        import re
+        typ, d = m.getquotaroot("INBOX")
+        txt = b" ".join(x if isinstance(x, bytes) else b" ".join(x) for x in d[-1]) if isinstance(d[-1], list) else d[-1]
+        u, lim = map(int, re.search(rb"STORAGE (\d+) (\d+)", txt).groups())
+    except Exception:
+        return
+    if u / lim < QUOTA_ALERT or time.time() - st.get("_quota_alert", 0) < 86400:
+        return
+    n = EmailMessage()
+    n["From"] = email.utils.formataddr(("네이버 메일 다리", NAVER_ADDR))
+    n["To"] = GMAIL_ADDR
+    n["Subject"] = f"[경고] 네이버 메일 용량 {u/lim:.0%} ({u/1024/1024:.2f}GB / {lim/1024/1024:.0f}GB)"
+    n["Date"] = email.utils.formatdate(localtime=True)
+    n["Message-ID"] = email.utils.make_msgid(domain="naver.com")
+    n[BRIDGE_HEADER] = "alert"
+    n.set_content("네이버 메일 용량이 90%를 넘었어요. 네이버 메일에서 큰 메일이나 오래된 폴더를 지워 주세요.\n")
+    send([n])
+    st["_quota_alert"] = time.time()
+    save_state(st)
+
+
 def quota(m) -> str:
     try:
         typ, d = m.getquotaroot("INBOX")
@@ -486,6 +550,8 @@ def run(init_only=False):
         if not init_only:
             purge(m, st)
             purge_sent_copies(m)
+            housekeeping(m)
+            quota_alert(m, st)
             log.info("네이버 용량 %s", quota(m))
     finally:
         try:
