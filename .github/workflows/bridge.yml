@@ -1,7 +1,7 @@
 name: naver-to-gmail
 on:
   schedule:
-    - cron: "*/5 * * * *"
+    - cron: "3-58/5 * * * *"  # 정각 혼잡 피함(깃허브 권장). 5분마다
   workflow_dispatch:
 permissions:
   contents: write
