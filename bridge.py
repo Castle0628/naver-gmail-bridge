@@ -145,6 +145,19 @@ def save_state(st):
     tmp.replace(STATE)
 
 
+def display_name(name: str, addr: str) -> str:
+    """지메일에 보일 보낸 사람 이름. 이름 칸에 '@' 주소를 넣으면 지메일이 사칭으로 보고
+    '의심스러운 메일·이미지 숨김' 경고를 띄운다(2026-11-20 시험) → '이름 · 도메인'으로 쓴다."""
+    local, _, domain = (addr or "").partition("@")
+    name = (name or "").strip()
+    if name == addr:
+        name = local
+    name = name.replace('"', "").replace("@", " ").strip()
+    if not name or name == local:
+        name = local or "알 수 없음"
+    return f"{name} · {domain}" if domain else name
+
+
 def build_forward(raw: bytes, folder_human: str) -> EmailMessage:
     orig = email.message_from_bytes(raw, policy=email.policy.default)
     o_from = dec(orig.get("From"))
@@ -160,7 +173,7 @@ def build_forward(raw: bytes, folder_human: str) -> EmailMessage:
         del msg[h]
     del msg["Subject"]
     shown = (o_name or o_addr or "알 수 없음").replace('"', "")
-    msg["From"] = email.utils.formataddr((f"{shown} ({o_addr})", NAVER_ADDR))
+    msg["From"] = email.utils.formataddr((display_name(shown, o_addr), NAVER_ADDR))
     msg["To"] = GMAIL_ADDR
     msg["Reply-To"] = o_reply
     msg["Subject"] = subject
@@ -237,7 +250,7 @@ def big_with_links(raw: bytes, folder_human: str, uid: int, token: str) -> Email
 
     n = EmailMessage()
     shown = (o_name or o_addr or "알 수 없음").replace('"', "")
-    n["From"] = email.utils.formataddr((f"{shown} ({o_addr})", NAVER_ADDR))
+    n["From"] = email.utils.formataddr((display_name(shown, o_addr), NAVER_ADDR))
     n["To"] = GMAIL_ADDR
     n["Reply-To"] = dec(orig.get("Reply-To")) or o_from
     pre = f"[{folder_human}] " if folder_human != "INBOX" else ""
@@ -291,7 +304,7 @@ def split_forward(raw: bytes, folder_human: str):
     outs = []
     for i, grp in enumerate(groups, 1):
         n = EmailMessage()
-        n["From"] = email.utils.formataddr((f"{shown} ({o_addr})", NAVER_ADDR))
+        n["From"] = email.utils.formataddr((display_name(shown, o_addr), NAVER_ADDR))
         n["To"] = GMAIL_ADDR
         n["Reply-To"] = dec(orig.get("Reply-To")) or o_from
         n["Subject"] = f"{pre}({i}/{total}) {subject}"
@@ -323,7 +336,7 @@ def too_big_notice(raw: bytes, folder_human: str) -> EmailMessage:
     o_from = dec(orig.get("From"))
     o_name, o_addr = email.utils.parseaddr(o_from)
     n = EmailMessage()
-    n["From"] = email.utils.formataddr((f"{o_name or o_addr} ({o_addr})", NAVER_ADDR))
+    n["From"] = email.utils.formataddr((display_name(o_name or o_addr, o_addr), NAVER_ADDR))
     n["To"] = GMAIL_ADDR
     n["Reply-To"] = dec(orig.get("Reply-To")) or o_from
     n["Subject"] = f"[첨부 큼·네이버에서 확인] {dec(orig.get('Subject'))}"
