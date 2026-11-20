@@ -39,7 +39,7 @@ NAVER_USER = "bkeng6331"
 NAVER_ADDR = "bkeng6331@naver.com"
 GMAIL_ADDR = "bkeng6331@gmail.com"
 BRIDGE_HEADER = "X-Naver-Gmail-Bridge"
-MAX_BYTES = 18 * 1024 * 1024          # 네이버 SMTP 한도보다 작게. 넘으면 알림만 보냄
+MAX_BYTES = 37 * 1024 * 1024          # 네이버 SMTP 한도(EHLO SIZE 39,845,888B=38MB)보다 조금 작게. 넘으면 알림만 보냄
 
 SKIP_FOLDERS = {
     "Sent Messages", "Drafts", "Deleted Messages", "Junk", "Templates",
