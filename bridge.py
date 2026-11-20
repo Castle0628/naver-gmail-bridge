@@ -18,6 +18,7 @@ import base64
 import email
 import email.policy
 import email.utils
+import html
 import imaplib
 import json
 import logging
@@ -173,6 +174,88 @@ def build_forward(raw: bytes, folder_human: str) -> EmailMessage:
     return msg
 
 
+FILES_REPO = "Castle0628/naver-mail-files"   # 비공개. 큰 첨부를 Releases에 보관
+
+
+def _gh(method, url, token, data=None, headers=None):
+    import urllib.request
+    h = {"Authorization": f"Bearer {token}", "Accept": "application/vnd.github+json",
+         "X-GitHub-Api-Version": "2022-11-28", **(headers or {})}
+    if isinstance(data, dict):
+        data = json.dumps(data).encode()
+        h["Content-Type"] = "application/json"
+    req = urllib.request.Request(url, data=data, headers=h, method=method)
+    with urllib.request.urlopen(req, timeout=600) as r:
+        return json.loads(r.read() or b"{}")
+
+
+def upload_attachments(parts, tag: str, title: str, token: str) -> list[tuple[str, int, str]]:
+    """첨부들을 비공개 저장소 릴리스에 올리고 (원래이름, 크기, 내려받기 주소) 목록을 돌려준다."""
+    import urllib.parse
+    rel = _gh("POST", f"https://api.github.com/repos/{FILES_REPO}/releases", token,
+              {"tag_name": tag, "name": title[:120], "body": title})
+    out = []
+    for i, (fname, data) in enumerate(parts, 1):
+        ext = Path(fname).suffix if Path(fname).suffix.isascii() else ""
+        asset = f"{i:02d}{ext}" if not fname.isascii() else fname.replace(" ", "_")
+        q = urllib.parse.urlencode({"name": asset, "label": fname})
+        a = _gh("POST", f"https://uploads.github.com/repos/{FILES_REPO}/releases/{rel['id']}/assets?{q}",
+                token, data, {"Content-Type": "application/octet-stream"})
+        out.append((fname, len(data), a["browser_download_url"]))
+    return out
+
+
+def big_with_links(raw: bytes, folder_human: str, uid: int, token: str) -> EmailMessage:
+    """37MB 넘는 메일: 첨부는 비공개 저장소에 올리고, 본문 + 내려받기 주소를 지메일로 보낸다."""
+    orig = email.message_from_bytes(raw, policy=email.policy.default)
+    files, keep_small = [], []
+    for part in orig.walk():
+        if part.is_multipart():
+            continue
+        fname = part.get_filename()
+        if not fname and part.get_content_disposition() != "attachment":
+            continue
+        data = part.get_payload(decode=True) or b""
+        files.append((dec(fname) or f"첨부{len(files)+1}", data))
+    o_from = dec(orig.get("From"))
+    o_name, o_addr = email.utils.parseaddr(o_from)
+    subject = dec(orig.get("Subject")) or "(제목 없음)"
+    tag = f"m{time.strftime('%Y%m%d-%H%M%S')}-{uid}"
+    links = upload_attachments(files, tag, f"{subject} / {o_from}", token)
+
+    body = orig.get_body(preferencelist=("html", "plain"))
+    text = body.get_content() if body else ""
+    is_html = bool(body) and body.get_content_type() == "text/html"
+    rows = "".join(
+        f'<li><a href="{u}">{html.escape(n)}</a> ({s/1024/1024:.1f}MB)</li>'
+        for n, s, u in links)
+    notice_html = (f'<div style="border:1px solid #f0b400;background:#fff8e1;padding:10px;margin-bottom:12px">'
+                   f'첨부가 커서({len(raw)/1024/1024:.0f}MB) 파일은 아래 주소에서 받으세요. '
+                   f'(깃허브 Castle0628 로그인 필요)<ul>{rows}</ul></div>')
+    notice_txt = "첨부가 커서 파일은 아래 주소에서 받으세요(깃허브 로그인 필요):\n" + \
+        "\n".join(f"- {n} ({s/1024/1024:.1f}MB): {u}" for n, s, u in links) + "\n\n"
+
+    n = EmailMessage()
+    shown = (o_name or o_addr or "알 수 없음").replace('"', "")
+    n["From"] = email.utils.formataddr((f"{shown} ({o_addr})", NAVER_ADDR))
+    n["To"] = GMAIL_ADDR
+    n["Reply-To"] = dec(orig.get("Reply-To")) or o_from
+    pre = f"[{folder_human}] " if folder_human != "INBOX" else ""
+    n["Subject"] = f"{pre}[큰 첨부·링크] {subject}"
+    n["X-Original-From"] = o_from
+    if orig.get("To"):
+        n["X-Original-To"] = dec(orig.get("To"))
+    if orig.get("Cc"):
+        n["X-Original-Cc"] = dec(orig.get("Cc"))
+    n[BRIDGE_HEADER] = folder_human
+    if is_html:
+        n.set_content(notice_txt + "(HTML 메일이에요)")
+        n.add_alternative(notice_html + text, subtype="html")
+    else:
+        n.set_content(notice_txt + text)
+    return n
+
+
 def too_big_notice(raw: bytes, folder_human: str) -> EmailMessage:
     orig = email.message_from_bytes(raw, policy=email.policy.default)
     o_from = dec(orig.get("From"))
@@ -270,12 +353,21 @@ def run(init_only=False):
                 if BRIDGE_HEADER.encode() in raw[:20000]:
                     pass  # 우리가 만든 메일이면 넘기지 않음
                 else:
-                    small = len(raw) <= MAX_BYTES
-                    out = build_forward(raw, human) if small else too_big_notice(raw, human)
+                    token = os.environ.get("FILES_TOKEN")
+                    if len(raw) <= MAX_BYTES:
+                        out, done = build_forward(raw, human), True
+                    elif token:
+                        try:
+                            out, done = big_with_links(raw, human, uid, token), True
+                        except Exception as e:
+                            log.exception("큰 첨부 올리기 실패 uid=%s: %s", uid, e)
+                            out, done = too_big_notice(raw, human), False
+                    else:
+                        out, done = too_big_notice(raw, human), False
                     send([out])
                     sent += 1
                     log.info("넘김 %s uid=%s %s", human, uid, out["Subject"])
-                    if small:  # 통째로 넘긴 것만 3일 뒤 삭제 대상. 큰 첨부는 네이버에 남김
+                    if done:  # 지메일(또는 비공개 저장소)에 다 옮긴 것만 3일 뒤 삭제 대상
                         mid = email.message_from_bytes(raw[:200000]).get("Message-ID", "")
                         st.setdefault("_pending", {}).setdefault(name, []).append(
                             [uid, time.time(), str(mid).strip()])

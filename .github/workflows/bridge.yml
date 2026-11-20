@@ -20,6 +20,7 @@ jobs:
       - name: 네이버 새 메일 → 지메일
         env:
           NAVER_APP_PASSWORD: ${{ secrets.NAVER_APP_PASSWORD }}
+          FILES_TOKEN: ${{ secrets.FILES_TOKEN }}
         run: python bridge.py
       - name: 본 위치 저장
         if: always()
