@@ -459,11 +459,11 @@ def housekeeping(m) -> None:
         log.info("청소: 보낸메일 사본 %d, 광고·알림 %d, 휴지통 %d통", n_sent, n_junk, n_trash)
 
 
-QUOTA_ALERT = 0.90
+QUOTA_ALERT = 0.95  # 사용자 지정 2026-11-20 '95% 넘으면 경고'
 
 
 def quota_alert(m, st) -> None:
-    """용량이 90%를 넘으면 지메일로 경고(하루 한 번)."""
+    """용량이 95%를 넘으면 지메일로 경고(하루 한 번)."""
     try:
         import re
         typ, d = m.getquotaroot("INBOX")
@@ -480,7 +480,7 @@ def quota_alert(m, st) -> None:
     n["Date"] = email.utils.formatdate(localtime=True)
     n["Message-ID"] = email.utils.make_msgid(domain="naver.com")
     n[BRIDGE_HEADER] = "alert"
-    n.set_content("네이버 메일 용량이 90%를 넘었어요. 네이버 메일에서 큰 메일이나 오래된 폴더를 지워 주세요.\n")
+    n.set_content("네이버 메일 용량이 95%를 넘었어요. 네이버 메일에서 큰 메일이나 오래된 폴더를 지워 주세요.\n")
     send([n])
     st["_quota_alert"] = time.time()
     save_state(st)
